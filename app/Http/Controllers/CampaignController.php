@@ -1,0 +1,239 @@
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Models\Campaign;
+use App\Models\Donation;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\Session;
+use Illuminate\Support\Facades\Storage;
+use Illuminate\Support\Facades\Validator;
+use Illuminate\Support\Str;
+
+class CampaignController extends Controller
+{
+    /**
+     * Display a listing of the resource.
+     */
+    public function index()
+    {
+
+        $role = Auth::user()->role;
+
+        if ($role == 'admin') {
+            $campaigns = Campaign::select(
+                'campaign_id',
+                'title',
+                'slug',
+                'target_amount',
+                'collected_amount',
+                'status'
+            )->get();
+        } else if ($role == 'user') {
+
+            $campaigns = Campaign::select(
+                'campaign_id',
+                'title',
+                'slug',
+                'target_amount',
+                'collected_amount',
+                'status'
+            )
+                ->where('status', 'active')
+                ->get();
+        }
+
+        return view('campaigns.index', compact('campaigns'));
+    }
+
+    /**
+     * Show the form for creating a new resource.
+     */
+    public function create()
+    {
+        return view('campaigns.create');
+    }
+
+    /**
+     * Store a newly created resource in storage.
+     */
+    public function store(Request $request)
+    {
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'title' => 'required|max:100',
+                'target_amount' => 'required|numeric|digits_between:1,15',
+                'image' => 'required|extensions:png,jpg,jpeg|mimes:png,jpg,jpeg',
+                'description' => 'required'
+            ],
+            [
+                'title.required' => 'Judul tidak boleh kosong.',
+                'title.max' => 'Judul tidak boleh lebih dari :max karakter.',
+
+                'target_amount.required' => 'Target donasi tidak boleh kosong.',
+                'target_amount.numeric' => 'Target donasi harus berupa angka.',
+                'target_amount.digits_between' => 'Jumlah target donasi terlalu besar.',
+
+                'image.required' => 'Gambar kampanye wajib diupload.',
+                'image.extensions' => 'Format gambar harus png, jpg, atau jpeg.',
+                'image.mimes' => 'File gambar harus bertipe png, jpg, atau jpeg.',
+
+                'description.required' => 'Deskripsi kampanye tidak boleh kosong.'
+            ]
+        );
+
+        if ($validator->fails()) {
+            return redirect()
+                ->back()
+                ->withErrors($validator)
+                ->withInput();
+        } else {
+
+            Campaign::create([
+                'title' => trim($request->input('title')),
+                'slug' => Str::slug(trim($request->input('title')), '-'),
+                'target_amount' => (int)$request->input('target_amount'),
+                'image' => $request->file('image')->store('campaigns', 'public'),
+                'description' => trim($request->input('description'))
+            ]);
+
+            Session::flash('success', 'Berhasil menambahkan kampanye baru.');
+            return redirect('/campaigns');
+        }
+    }
+
+    /**
+     * Display the specified resource.
+     */
+    public function show(string $slug)
+    {
+        $campaign = Campaign::where('slug', $slug)
+            ->where('status', 'active')
+            ->first();
+
+        if ($campaign && $campaign->status == 'active') {
+            $donations = Donation::with('user')
+                ->where('campaign_id', $campaign->campaign_id)
+                ->where('status', 'success')
+                ->get();
+
+            return view('campaigns.show', compact('campaign', 'donations'));
+        } else {
+            abort(404);
+        }
+    }
+
+    /**
+     * Show the form for editing the specified resource.
+     */
+    public function edit(string $id)
+    {
+        $campaign = Campaign::findOrFail($id);
+
+        return view('campaigns.edit', compact('campaign'));
+    }
+
+    /**
+     * Update the specified resource in storage.
+     */
+    public function update(Request $request, $id)
+    {
+        $campaign = Campaign::findOrFail($id);
+
+        $validator = Validator::make(
+            $request->all(),
+            [
+                'title' => 'required|max:100',
+                'target_amount' => 'required|numeric|digits_between:1,15',
+                'image' => 'nullable|extensions:png,jpg,jpeg|mimes:png,jpg,jpeg',
+                'status' => 'required|in:active,closed',
+                'description' => 'required'
+            ],
+            [
+                'title.required' => 'Judul tidak boleh kosong.',
+                'title.max' => 'Judul tidak boleh lebih dari :max karakter.',
+
+                'target_amount.required' => 'Target donasi tidak boleh kosong.',
+                'target_amount.numeric' => 'Target donasi harus berupa angka.',
+                'target_amount.digits_between' => 'Jumlah target donasi terlalu besar.',
+
+                'image.extensions' => 'Format gambar harus png, jpg, atau jpeg.',
+                'image.mimes' => 'File gambar harus bertipe png, jpg, atau jpeg.',
+
+                'status.required' => 'Status tidak boleh kosong.',
+                'status.in' => 'Pilih status yang tersedia.',
+
+                'description.required' => 'Deskripsi kampanye tidak boleh kosong.'
+            ]
+        );
+
+        if ($validator->fails()) {
+            return redirect()
+                ->back()
+                ->withErrors($validator)
+                ->withInput();
+        } else {
+
+            $imagePath = $campaign->image;
+
+            if ($request->hasFile('image')) {
+
+                if ($campaign->image && Storage::disk('public')->exists($campaign->image)) {
+                    Storage::disk('public')->delete($campaign->image);
+                }
+
+                $imagePath = $request->file('image')->store('campaigns', 'public');
+            }
+
+            $campaign->update([
+                'title' => trim($request->input('title')),
+                'slug' => Str::slug(trim($request->input('title')), '-'),
+                'target_amount' => (int)$request->input('target_amount'),
+                'image' => $imagePath,
+                'status' => $request->input('status'),
+                'description' => trim($request->input('description'))
+            ]);
+
+            Session::flash('success', 'Berhasil memperbarui kampanye.');
+
+            return redirect('/campaigns');
+        }
+    }
+
+    /**
+     * Remove the specified resource from storage.
+     */
+    public function destroy(string $id)
+    {
+        $campaign = Campaign::findOrFail($id);
+
+        // Hapus gambar lama jika ada
+        if ($campaign->image && Storage::disk('public')->exists($campaign->image)) {
+            Storage::disk('public')->delete($campaign->image);
+        }
+
+        $campaign->delete();
+
+        Session::flash('success', 'Berhasil menghapus kampanye.');
+        return redirect('/campaigns');
+    }
+
+    public function listCampaigns()
+    {
+
+        $campaigns = Campaign::select(
+            'title',
+            'image',
+            'slug',
+            'target_amount',
+            'collected_amount',
+            'created_at'
+        )
+            ->where('status', 'active')
+            ->simplePaginate(6);
+
+        return view('campaigns.list-campaigns', compact('campaigns'));
+    }
+}
